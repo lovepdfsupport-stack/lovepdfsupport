@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronRight, ChevronLeft, ChevronRight as ChevRight, PenTool, Type, Eraser, Download, Loader2, CheckCircle2, X, Trash2, Move, Image as ImageIcon, UploadCloud, Wand2, Plus, Layers } from 'lucide-react';
+import { ChevronRight, ChevronLeft, ChevronRight as ChevRight, PenTool, Type, Eraser, Download, Loader2, CheckCircle2, X, Trash2, Move, Image as ImageIcon, UploadCloud, Wand2, Plus, Layers, Undo2, ZoomIn, ZoomOut } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import FileDrop from '../components/FileDrop';
@@ -65,11 +65,17 @@ const SignPad = ({ onChange }) => {
 // Erase parts of a transparent cutout (background-removal touch-up).
 const TouchUpCanvas = ({ src, onChange }) => {
   const cRef = useRef(null);
+  const wrapRef = useRef(null);
   const orig = useRef(null);
   const drawing = useRef(false);
   const [brush, setBrush] = useState(16);
-  const [scale, setScale] = useState(1);
+  const [scale, setScale] = useState(1); // DISP / imgWidth
+  const [zoom, setZoom] = useState(1);
+  const [eraseOn, setEraseOn] = useState(true);
+  const [history, setHistory] = useState([]);
+  const [cursor, setCursor] = useState({ x: 0, y: 0, on: false });
   const DISP = 260;
+
   useEffect(() => {
     const img = new Image();
     img.onload = () => {
@@ -80,45 +86,104 @@ const TouchUpCanvas = ({ src, onChange }) => {
       ctx.clearRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0);
       setScale(DISP / img.width);
+      setHistory([]);
     };
     img.src = src;
   }, []);
-  const pos = (e) => {
+
+  const canvasPos = (e) => {
     const c = cRef.current; const r = c.getBoundingClientRect();
     const t = e.touches ? e.touches[0] : e;
     return { x: (t.clientX - r.left) * (c.width / r.width), y: (t.clientY - r.top) * (c.height / r.height) };
   };
+  const radiusCanvas = () => brush / ((scale || 1) * zoom);
+
   const paint = (p) => {
     const ctx = cRef.current.getContext('2d');
     ctx.globalCompositeOperation = 'destination-out';
     ctx.beginPath();
-    ctx.arc(p.x, p.y, brush / (scale || 1), 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, radiusCanvas(), 0, Math.PI * 2);
     ctx.fill();
     ctx.globalCompositeOperation = 'source-over';
   };
-  const start = (e) => { e.preventDefault(); drawing.current = true; paint(pos(e)); };
-  const move = (e) => { if (!drawing.current) return; e.preventDefault(); paint(pos(e)); };
+
+  const snapshot = () => setHistory((h) => [...h.slice(-19), cRef.current.toDataURL('image/png')]);
+
+  const start = (e) => {
+    if (!eraseOn) return;
+    e.preventDefault();
+    snapshot();
+    drawing.current = true;
+    paint(canvasPos(e));
+  };
+  const move = (e) => {
+    const wr = wrapRef.current.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    setCursor({ x: t.clientX - wr.left, y: t.clientY - wr.top, on: true });
+    if (!drawing.current) return;
+    if (e.cancelable) e.preventDefault();
+    paint(canvasPos(e));
+  };
   const end = () => { if (drawing.current) { drawing.current = false; onChange(cRef.current.toDataURL('image/png')); } };
+
+  const loadInto = (dataUrl) => new Promise((res) => {
+    const im = new Image();
+    im.onload = () => { const c = cRef.current, ctx = c.getContext('2d'); ctx.clearRect(0, 0, c.width, c.height); ctx.drawImage(im, 0, 0); res(); };
+    im.src = dataUrl;
+  });
+  const undo = async () => {
+    if (!history.length) return;
+    const prev = history[history.length - 1];
+    setHistory((h) => h.slice(0, -1));
+    await loadInto(prev);
+    onChange(cRef.current.toDataURL('image/png'));
+  };
   const reset = () => {
-    const c = cRef.current; const ctx = c.getContext('2d');
+    const c = cRef.current, ctx = c.getContext('2d');
     ctx.clearRect(0, 0, c.width, c.height);
     ctx.drawImage(orig.current, 0, 0);
+    setHistory([]);
     onChange(c.toDataURL('image/png'));
   };
+  const onWheel = (e) => { e.preventDefault(); setBrush((b) => Math.max(4, Math.min(80, b + (e.deltaY < 0 ? 2 : -2)))); };
+
   return (
     <div className="space-y-2">
-      <div className="rounded-xl border border-slate-200 dark:border-white/10 p-2 grid place-items-center" style={CHECKER}>
-        <canvas ref={cRef} className="max-w-full touch-none cursor-crosshair" style={{ width: DISP }}
-          onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
-          onTouchStart={start} onTouchMove={move} onTouchEnd={end} />
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <button onClick={() => setEraseOn((v) => !v)} title="Toggle eraser"
+          className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${eraseOn ? 'bg-rose-500 border-rose-500 text-white' : 'border-slate-200 dark:border-white/10 text-slate-500'}`}>
+          <Eraser className="w-3.5 h-3.5" /> Eraser
+        </button>
+        <button onClick={undo} disabled={!history.length} title="Undo"
+          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-slate-200 dark:border-white/10 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5 disabled:opacity-40">
+          <Undo2 className="w-3.5 h-3.5" /> Undo
+        </button>
+        <div className="inline-flex items-center rounded-lg border border-slate-200 dark:border-white/10">
+          <button onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} className="px-2 py-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"><ZoomOut className="w-3.5 h-3.5" /></button>
+          <span className="text-[11px] font-semibold w-9 text-center">{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom((z) => Math.min(4, +(z + 0.5).toFixed(1)))} className="px-2 py-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-white/5"><ZoomIn className="w-3.5 h-3.5" /></button>
+        </div>
+        <button onClick={reset} className="ml-auto text-xs font-semibold text-slate-500 hover:text-rose-500">Reset</button>
       </div>
+
+      <div ref={wrapRef} className="relative rounded-xl border border-slate-200 dark:border-white/10 overflow-hidden" onWheel={onWheel} onMouseLeave={() => setCursor((c) => ({ ...c, on: false }))}>
+        <div className="overflow-auto grid place-items-center" style={{ height: 220, ...CHECKER }}>
+          <canvas ref={cRef} style={{ width: DISP * zoom, touchAction: 'none', cursor: eraseOn ? 'none' : 'default' }}
+            onMouseDown={start} onMouseMove={move} onMouseUp={end}
+            onTouchStart={start} onTouchMove={move} onTouchEnd={end} />
+        </div>
+        {eraseOn && cursor.on && (
+          <div className="pointer-events-none absolute rounded-full border-2 border-rose-500/80 bg-rose-500/10"
+            style={{ left: cursor.x, top: cursor.y, width: brush * 2, height: brush * 2, transform: 'translate(-50%,-50%)' }} />
+        )}
+      </div>
+
       <div className="flex items-center gap-2">
-        <Eraser className="w-4 h-4 text-rose-500 shrink-0" />
         <span className="text-xs font-medium text-slate-500 shrink-0">Brush</span>
-        <input type="range" min={6} max={48} value={brush} onChange={(e) => setBrush(parseInt(e.target.value, 10))} className="flex-1 accent-rose-500" />
-        <button onClick={reset} className="text-xs font-semibold text-slate-500 hover:text-rose-500 shrink-0">Reset</button>
+        <input type="range" min={4} max={80} value={brush} onChange={(e) => setBrush(parseInt(e.target.value, 10))} className="flex-1 accent-rose-500" />
+        <span className="text-[11px] text-slate-400 w-9 text-right">{brush}px</span>
       </div>
-      <p className="text-[11px] text-slate-400">Drag on the image to erase any leftover background.</p>
+      <p className="text-[11px] text-slate-400">Turn on the Eraser, then drag to remove leftover background. Scroll to resize the brush, zoom in for detail, and Undo any mistake.</p>
     </div>
   );
 };
