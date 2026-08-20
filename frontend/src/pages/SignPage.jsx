@@ -163,7 +163,7 @@ const SignPage = () => {
     if (sig && preview && !box) {
       const w = Math.min(220, preview.pxW * 0.4);
       const h = w * (sig.ratio || 0.4);
-      setBox({ x: (preview.pxW - w) / 2, y: preview.pxH - h - 40, w, h });
+      setBox({ x: (preview.pxW - w) / 2, y: 40, w, h });
     }
   }, [sig, preview]);
 

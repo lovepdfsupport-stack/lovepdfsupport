@@ -438,17 +438,19 @@ const hexToRgb = (hex) => {
   return rgb(((int >> 16) & 255) / 255, ((int >> 8) & 255) / 255, (int & 255) / 255);
 };
 
-// Apply a list of text edits to the original PDF and return saved bytes.
-// edits: [{ pageIndex, xPt, yPt, sizePt, widthPt, text, color, bg, bold, italic, serif, mono }]
+// Apply a list of styled text edits to the original PDF and return saved bytes.
+// edits: [{ pageIndex, xPt, yPt, widthPt, bg, text, family, bold, italic, underline, size, color, align }]
 export const applyPdfTextEdits = async (file, edits) => {
   const docPdf = await PDFDocument.load(await readFile(file), { ignoreEncryption: true });
   const pages = docPdf.getPages();
   const cache = {};
-  const pick = async ({ bold, italic, serif, mono }) => {
-    let key;
-    if (mono) key = bold ? (italic ? 'CourierBoldOblique' : 'CourierBold') : (italic ? 'CourierOblique' : 'Courier');
-    else if (serif) key = bold ? (italic ? 'TimesRomanBoldItalic' : 'TimesRomanBold') : (italic ? 'TimesRomanItalic' : 'TimesRoman');
-    else key = bold ? (italic ? 'HelveticaBoldOblique' : 'HelveticaBold') : (italic ? 'HelveticaOblique' : 'Helvetica');
+  const fontKey = ({ family, bold, italic }) => {
+    if (family === 'mono') return bold ? (italic ? 'CourierBoldOblique' : 'CourierBold') : (italic ? 'CourierOblique' : 'Courier');
+    if (family === 'serif') return bold ? (italic ? 'TimesRomanBoldItalic' : 'TimesRomanBold') : (italic ? 'TimesRomanItalic' : 'TimesRoman');
+    return bold ? (italic ? 'HelveticaBoldOblique' : 'HelveticaBold') : (italic ? 'HelveticaOblique' : 'Helvetica');
+  };
+  const pick = async (e) => {
+    const key = fontKey(e);
     if (!cache[key]) cache[key] = await docPdf.embedFont(StandardFonts[key]);
     return cache[key];
   };
@@ -457,22 +459,37 @@ export const applyPdfTextEdits = async (file, edits) => {
     const page = pages[e.pageIndex];
     if (!page) continue;
     const font = await pick(e);
-    const size = e.sizePt || 12;
-    const coverW = Math.max(e.widthPt || 0, font.widthOfTextAtSize(e.text || '', size)) + 2;
-    // cover the original glyphs with the sampled background colour
+    const size = e.size || 12;
+    const text = e.text || '';
+    const safe = (t) => {
+      try { return font.widthOfTextAtSize(t, size); } catch { return (t.length * size * 0.5); }
+    };
+    const tw = safe(text);
+    const boxW = e.widthPt || tw;
+    let drawX = e.xPt;
+    if (e.align === 'center') drawX = e.xPt + (boxW - tw) / 2;
+    else if (e.align === 'right') drawX = e.xPt + (boxW - tw);
+
+    // cover the original glyphs (union of original box + new text position)
+    const left = Math.min(e.xPt, drawX) - 1;
+    const right = Math.max(e.xPt + boxW, drawX + tw) + 1;
     page.drawRectangle({
-      x: e.xPt - 1,
-      y: e.yPt - size * 0.28,
-      width: coverW,
-      height: size * 1.32,
+      x: left,
+      y: e.yPt - size * 0.30,
+      width: right - left,
+      height: size * 1.34,
       color: hexToRgb(e.bg),
     });
-    const drawWith = (txt) => page.drawText(txt, { x: e.xPt, y: e.yPt, size, font, color: hexToRgb(e.color) });
+
+    const col = hexToRgb(e.color);
+    const drawWith = (txt) => page.drawText(txt, { x: drawX, y: e.yPt, size, font, color: col });
     try {
-      drawWith(e.text || '');
+      drawWith(text);
     } catch (err) {
-      // Standard fonts only encode WinAnsi; fall back to ASCII-safe text.
-      drawWith((e.text || '').replace(/[^\x20-\x7E]/g, '?'));
+      drawWith(text.replace(/[^\x20-\x7E]/g, '?'));
+    }
+    if (e.underline) {
+      page.drawRectangle({ x: drawX, y: e.yPt - size * 0.12, width: tw, height: Math.max(0.6, size * 0.06), color: col });
     }
   }
   return docPdf.save();
