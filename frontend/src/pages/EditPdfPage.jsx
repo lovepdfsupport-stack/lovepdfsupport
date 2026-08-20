@@ -1,10 +1,10 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ChevronRight, Save, Download, Loader2, X, CheckCircle2, MousePointerClick,
   Bold, Italic, Underline, AlignLeft, AlignCenter, AlignRight, Type,
   ZoomIn, ZoomOut, PenLine, Shapes, StickyNote, FormInput, Image as ImageIcon,
-  RotateCcw, Minus, Plus,
+  RotateCcw, Minus, Plus, Square, Highlighter, Trash2, UploadCloud, Move,
 } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
@@ -58,6 +58,11 @@ const EditPdfPage = () => {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const [objects, setObjects] = useState([]); // {id, kind:'shape'|'image', pageIndex, n, ...}
+  const [selectedObjId, setSelectedObjId] = useState(null);
+  const stageRef = useRef(null);
+  const objDrag = useRef(null);
+  const imgInputRef = useRef(null);
 
   const loadPage = useCallback(async (f, idx) => {
     setLoading(true); setError('');
@@ -74,6 +79,7 @@ const EditPdfPage = () => {
     const f = list[0];
     setFile(f); setDocName(f.name || 'document.pdf');
     setPageIndex(0); setEdits({}); setSelectedId(null); setResult(null); setZoom(1);
+    setObjects([]); setSelectedObjId(null);
     await loadPage(f, 0);
     try {
       const t = await pdf.renderThumbnails(f, 60, 0.28);
@@ -102,19 +108,94 @@ const EditPdfPage = () => {
 
   const touchedList = Object.entries(edits).filter(([, e]) => e.touched);
   const editedCount = touchedList.length;
+  const changeCount = editedCount + objects.length;
+
+  // ---- Shapes & inserted images (movable objects) ----
+  const addShape = (type) => {
+    const id = 'o' + Math.random().toString(36).slice(2);
+    const defaults = type === 'line'
+      ? { n: { x: 0.25, y: 0.5, w: 0.5, h: 0.02 }, color: '#0f172a', strokeWidth: 2 }
+      : type === 'highlight'
+      ? { n: { x: 0.2, y: 0.3, w: 0.4, h: 0.05 }, color: '#fde047', opacity: 0.4 }
+      : { n: { x: 0.25, y: 0.3, w: 0.35, h: 0.14 }, color: '#e11d48', strokeWidth: 2, fill: false, opacity: 0.25 };
+    setObjects((prev) => [...prev, { id, kind: 'shape', type, pageIndex, ...defaults }]);
+    setSelectedObjId(id); setActiveTab('shapes');
+  };
+
+  const addImageObj = (fileList) => {
+    const f = fileList && fileList[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const id = 'o' + Math.random().toString(36).slice(2);
+        const ratio = img.height / img.width;
+        const w = 0.3; const h = w * ratio * (preview.ptW / preview.ptH);
+        setObjects((prev) => [...prev, { id, kind: 'image', pageIndex, dataUrl: r.result, ratio, n: { x: 0.35, y: 0.3, w, h } }]);
+        setSelectedObjId(id); setActiveTab('insert');
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(f);
+  };
+
+  const updateObj = (id, patch) => setObjects((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+  const removeObj = (id) => { setObjects((prev) => prev.filter((o) => o.id !== id)); if (selectedObjId === id) setSelectedObjId(null); };
+
+  const startObjDrag = (e, id, mode) => {
+    e.preventDefault(); e.stopPropagation();
+    setSelectedObjId(id); setSelectedId(null);
+    const t = e.touches ? e.touches[0] : e;
+    const o = objects.find((x) => x.id === id);
+    const rect = stageRef.current.getBoundingClientRect();
+    objDrag.current = { id, mode, startX: t.clientX, startY: t.clientY, n0: { ...o.n }, ratio: o.ratio, rw: rect.width, rh: rect.height, keepRatio: o.kind === 'image' };
+    window.addEventListener('mousemove', onObjDrag);
+    window.addEventListener('mouseup', stopObjDrag);
+    window.addEventListener('touchmove', onObjDrag, { passive: false });
+    window.addEventListener('touchend', stopObjDrag);
+  };
+  const onObjDrag = (e) => {
+    if (!objDrag.current) return;
+    if (e.cancelable) e.preventDefault();
+    const t = e.touches ? e.touches[0] : e;
+    const d = objDrag.current;
+    const dnx = (t.clientX - d.startX) / d.rw;
+    const dny = (t.clientY - d.startY) / d.rh;
+    setObjects((prev) => prev.map((o) => {
+      if (o.id !== d.id) return o;
+      if (d.mode === 'move') {
+        return { ...o, n: { ...o.n, x: Math.max(0, Math.min(1 - d.n0.w, d.n0.x + dnx)), y: Math.max(0, Math.min(1 - d.n0.h, d.n0.y + dny)) } };
+      }
+      const w = Math.max(0.03, Math.min(1 - d.n0.x, d.n0.w + dnx));
+      let h;
+      if (d.keepRatio) h = w * (d.ratio || 0.5) * (preview.ptW / preview.ptH);
+      else h = Math.max(0.01, Math.min(1 - d.n0.y, d.n0.h + dny));
+      return { ...o, n: { ...o.n, w, h } };
+    }));
+  };
+  const stopObjDrag = () => {
+    objDrag.current = null;
+    window.removeEventListener('mousemove', onObjDrag);
+    window.removeEventListener('mouseup', stopObjDrag);
+    window.removeEventListener('touchmove', onObjDrag);
+    window.removeEventListener('touchend', stopObjDrag);
+  };
 
   const save = async () => {
-    if (!editedCount) return;
+    if (!changeCount) return;
     setBusy(true); setError('');
     try {
-      const list = touchedList.map(([, e]) => ({
+      const texts = touchedList.map(([, e]) => ({
         pageIndex: e.pageIndex,
         xPt: e.item.xPt, yPt: e.item.yPt, widthPt: e.item.widthPt, bg: e.item.bg,
         text: e.text,
         family: e.style.family, bold: e.style.bold, italic: e.style.italic,
         underline: e.style.underline, size: e.style.size, color: e.style.color, align: e.style.align,
       }));
-      const bytes = await pdf.applyPdfTextEdits(file, list);
+      const shapes = objects.filter((o) => o.kind === 'shape').map((o) => ({ pageIndex: o.pageIndex, type: o.type, n: o.n, color: o.color, opacity: o.opacity, strokeWidth: o.strokeWidth, fill: o.fill }));
+      const images = objects.filter((o) => o.kind === 'image').map((o) => ({ pageIndex: o.pageIndex, dataUrl: o.dataUrl, n: o.n }));
+      const bytes = await pdf.applyPdfEdits(file, { texts, shapes, images });
       const name = (docName || 'document').replace(/\.pdf$/i, '') + '-edited.pdf';
       pdf.download(bytes, name);
       setResult({ name });
@@ -191,11 +272,90 @@ const EditPdfPage = () => {
 
   const comingSoon = (label) => (
     <div className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-      <div className="grid place-items-center w-12 h-12 rounded-xl bg-slate-500/10 text-slate-400 mb-3"><Shapes className="w-6 h-6" /></div>
+      <div className="grid place-items-center w-12 h-12 rounded-xl bg-slate-500/10 text-slate-400 mb-3"><StickyNote className="w-6 h-6" /></div>
       <p className="font-semibold text-slate-700 dark:text-slate-200 mb-1">{label}</p>
-      This workspace is coming soon. For now, use <span className="font-semibold text-rose-500">Edit Text</span> to change any text in your PDF.
+      This workspace is coming soon. For now, use <span className="font-semibold text-rose-500">Edit Text</span>, <span className="font-semibold text-rose-500">Shapes</span> or <span className="font-semibold text-rose-500">Insert</span>.
     </div>
   );
+
+  const selectedObj = selectedObjId ? objects.find((o) => o.id === selectedObjId) : null;
+
+  const renderShapesPanel = () => {
+    const shapeBtns = [
+      { type: 'rect', label: 'Rectangle', icon: Square },
+      { type: 'line', label: 'Line', icon: Minus },
+      { type: 'highlight', label: 'Highlight', icon: Highlighter },
+    ];
+    const o = selectedObj && selectedObj.kind === 'shape' ? selectedObj : null;
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-3 gap-2">
+          {shapeBtns.map((b) => (
+            <button key={b.type} onClick={() => addShape(b.type)}
+              className="flex flex-col items-center gap-1.5 py-3 rounded-xl border border-slate-200 dark:border-white/10 hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-500/[0.05] text-slate-600 dark:text-slate-300 text-xs font-semibold">
+              <b.icon className="w-5 h-5 text-rose-500" /> {b.label}
+            </button>
+          ))}
+        </div>
+        {o ? (
+          <div className="space-y-4 pt-1 border-t border-slate-100 dark:border-white/5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-500 capitalize">{o.type} selected</span>
+              <button onClick={() => removeObj(o.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-rose-500 hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /> Delete</button>
+            </div>
+            <div className="flex items-center gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1.5">Colour</label>
+                <input type="color" value={o.color} onChange={(e) => updateObj(o.id, { color: e.target.value })} className="w-11 h-10 rounded-lg border border-slate-200 dark:border-white/10 bg-white cursor-pointer" />
+              </div>
+              {o.type !== 'highlight' && (
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold text-slate-500 mb-1.5">Thickness</label>
+                  <input type="range" min={1} max={12} value={o.strokeWidth || 2} onChange={(e) => updateObj(o.id, { strokeWidth: parseInt(e.target.value, 10) })} className="w-full accent-rose-500" />
+                </div>
+              )}
+            </div>
+            {o.type === 'rect' && (
+              <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                <input type="checkbox" checked={!!o.fill} onChange={(e) => updateObj(o.id, { fill: e.target.checked })} className="accent-rose-500 w-4 h-4" /> Fill with colour
+              </label>
+            )}
+            {(o.type === 'highlight' || o.fill) && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 mb-1.5">Opacity</label>
+                <input type="range" min={5} max={100} value={Math.round((o.opacity ?? 0.35) * 100)} onChange={(e) => updateObj(o.id, { opacity: parseInt(e.target.value, 10) / 100 })} className="w-full accent-rose-500" />
+              </div>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500 dark:text-slate-400">Add a shape, then drag to position and resize it. Select any shape to change its colour and thickness.</p>
+        )}
+      </div>
+    );
+  };
+
+  const renderInsertPanel = () => {
+    const o = selectedObj && selectedObj.kind === 'image' ? selectedObj : null;
+    return (
+      <div className="space-y-4">
+        <input ref={imgInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => addImageObj(e.target.files)} />
+        <button onClick={() => imgInputRef.current?.click()}
+          className="w-full flex flex-col items-center justify-center gap-2 py-7 rounded-xl border-2 border-dashed border-slate-200 dark:border-white/10 hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-500/[0.05] transition-colors text-slate-500">
+          <UploadCloud className="w-7 h-7 text-rose-500" />
+          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Insert an image</span>
+          <span className="text-xs">JPG or PNG · logo, photo, stamp…</span>
+        </button>
+        {o ? (
+          <div className="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-white/5">
+            <span className="text-xs font-semibold text-slate-500">Image selected</span>
+            <button onClick={() => removeObj(o.id)} className="inline-flex items-center gap-1 text-xs font-semibold text-rose-500 hover:text-rose-600"><Trash2 className="w-3.5 h-3.5" /> Delete</button>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-500 dark:text-slate-400">After inserting, drag the image to position it and pull the corner to resize.</p>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-white dark:bg-[#0a0d16] text-slate-900 dark:text-slate-100 transition-colors">
@@ -219,7 +379,7 @@ const EditPdfPage = () => {
           <div className="rounded-3xl border border-emerald-200 dark:border-emerald-500/20 bg-emerald-50/60 dark:bg-emerald-500/[0.06] p-8 text-center">
             <div className="grid place-items-center w-14 h-14 mx-auto rounded-2xl bg-emerald-500/15 text-emerald-500"><CheckCircle2 className="w-8 h-8" /></div>
             <h3 className="font-display font-bold text-2xl mt-5">Your edited PDF is ready!</h3>
-            <p className="text-slate-500 dark:text-slate-400 mt-2">Saved {editedCount} change{editedCount === 1 ? '' : 's'} to <span className="font-medium">{result.name}</span>.</p>
+            <p className="text-slate-500 dark:text-slate-400 mt-2">Saved {changeCount} change{changeCount === 1 ? '' : 's'} to <span className="font-medium">{result.name}</span>.</p>
             <button onClick={save} className="mt-6 inline-flex items-center gap-2 btn-primary text-white font-semibold px-7 py-3.5 rounded-xl transition"><Download className="w-5 h-5" /> Download again</button>
             <button onClick={() => setResult(null)} className="mt-5 block mx-auto text-sm font-semibold text-slate-500 hover:text-rose-500">Keep editing</button>
           </div>
@@ -229,7 +389,7 @@ const EditPdfPage = () => {
           {/* Top toolbar */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-3 min-w-0">
-              <button onClick={() => { setFile(null); setPreview(null); setEdits({}); setThumbs([]); }} className="text-sm font-medium text-slate-500 hover:text-rose-500 flex items-center gap-1 shrink-0"><X className="w-4 h-4" /> Close</button>
+              <button onClick={() => { setFile(null); setPreview(null); setEdits({}); setThumbs([]); setObjects([]); setSelectedObjId(null); }} className="text-sm font-medium text-slate-500 hover:text-rose-500 flex items-center gap-1 shrink-0"><X className="w-4 h-4" /> Close</button>
               <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[180px]">{docName}</span>
             </div>
             <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-white/5 order-3 sm:order-2 w-full sm:w-auto overflow-x-auto">
@@ -240,9 +400,9 @@ const EditPdfPage = () => {
                 </button>
               ))}
             </div>
-            <button onClick={save} disabled={busy || editedCount === 0}
+            <button onClick={save} disabled={busy || changeCount === 0}
               className="order-2 sm:order-3 inline-flex items-center gap-2 btn-primary text-white font-semibold px-5 py-2.5 rounded-xl transition disabled:opacity-50 disabled:cursor-not-allowed">
-              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save changes{editedCount > 0 ? ` (${editedCount})` : ''}
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save changes{changeCount > 0 ? ` (${changeCount})` : ''}
             </button>
           </div>
 
@@ -276,8 +436,8 @@ const EditPdfPage = () => {
                   <div className="flex items-center gap-2 text-slate-500 place-self-center"><Loader2 className="w-5 h-5 animate-spin" /> Reading page…</div>
                 ) : (
                   <div style={{ width: preview.pxW * zoom, height: preview.pxH * zoom }}>
-                    <div style={{ transform: `scale(${zoom})`, transformOrigin: 'top left', width: preview.pxW, height: preview.pxH }}
-                      className="relative bg-white shadow-xl" onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}>
+                    <div ref={stageRef} style={{ transform: `scale(${zoom})`, transformOrigin: 'top left', width: preview.pxW, height: preview.pxH }}
+                      className="relative bg-white shadow-xl" onClick={(e) => { if (e.target === e.currentTarget) { setSelectedId(null); setSelectedObjId(null); } }}>
                       <img src={preview.dataUrl} alt={`page ${pageIndex + 1}`} className="block select-none pointer-events-none" style={{ width: preview.pxW, height: preview.pxH }} draggable={false} />
                       {preview.items.map((it) => {
                         const entry = edits[it.id];
@@ -322,6 +482,34 @@ const EditPdfPage = () => {
                           </div>
                         );
                       })}
+                      {objects.filter((o) => o.pageIndex === pageIndex).map((o) => {
+                        const left = o.n.x * preview.pxW, top = o.n.y * preview.pxH, w = o.n.w * preview.pxW, h = o.n.h * preview.pxH;
+                        const sel = selectedObjId === o.id;
+                        let inner;
+                        if (o.kind === 'image') {
+                          inner = <img src={o.dataUrl} alt="inserted" className="w-full h-full object-fill pointer-events-none select-none" />;
+                        } else if (o.type === 'highlight') {
+                          inner = <div className="w-full h-full" style={{ background: o.color, opacity: o.opacity ?? 0.35 }} />;
+                        } else if (o.type === 'line') {
+                          inner = <div style={{ position: 'absolute', left: 0, right: 0, top: '50%', transform: 'translateY(-50%)', borderTop: `${(o.strokeWidth || 2) * scale}px solid ${o.color}` }} />;
+                        } else {
+                          inner = <div className="w-full h-full" style={{ border: `${(o.strokeWidth || 2) * scale}px solid ${o.color}`, background: o.fill ? o.color : 'transparent', opacity: o.fill ? (o.opacity ?? 0.25) : 1 }} />;
+                        }
+                        return (
+                          <div key={o.id} className={`absolute ${sel ? 'outline outline-2 outline-rose-500/80' : ''}`}
+                            style={{ left, top, width: w, height: h, zIndex: sel ? 25 : 15, cursor: 'move' }}
+                            onMouseDown={(e) => startObjDrag(e, o.id, 'move')} onTouchStart={(e) => startObjDrag(e, o.id, 'move')}>
+                            {inner}
+                            {sel && (
+                              <>
+                                <span className="absolute -top-3 -left-3 grid place-items-center w-6 h-6 rounded-full bg-rose-500 text-white cursor-move"><Move className="w-3.5 h-3.5" /></span>
+                                <button onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); removeObj(o.id); }} className="absolute -top-3 -right-3 grid place-items-center w-6 h-6 rounded-full bg-white border border-rose-300 text-rose-500 hover:bg-rose-50"><Trash2 className="w-3.5 h-3.5" /></button>
+                                <span onMouseDown={(e) => startObjDrag(e, o.id, 'resize')} onTouchStart={(e) => startObjDrag(e, o.id, 'resize')} className="absolute -bottom-2 -right-2 w-4 h-4 rounded-full bg-white border-2 border-rose-500 cursor-se-resize" />
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -345,9 +533,9 @@ const EditPdfPage = () => {
                   {(TABS.find((t) => t.id === activeTab) || {}).label}
                 </h3>
                 {activeTab === 'edit-text' ? renderEditTextPanel()
+                  : activeTab === 'shapes' ? renderShapesPanel()
+                  : activeTab === 'insert' ? renderInsertPanel()
                   : activeTab === 'annotate' ? comingSoon('Annotate')
-                  : activeTab === 'shapes' ? comingSoon('Shapes')
-                  : activeTab === 'insert' ? comingSoon('Insert')
                   : comingSoon('Forms')}
               </div>
             </aside>

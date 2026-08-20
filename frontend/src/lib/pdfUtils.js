@@ -495,6 +495,91 @@ export const applyPdfTextEdits = async (file, edits) => {
   return docPdf.save();
 };
 
+// Unified editor apply: text edits + shapes + inserted images.
+// texts: same shape as applyPdfTextEdits.
+// shapes: [{ pageIndex, type:'rect'|'line'|'highlight', n:{x,y,w,h}, color, opacity, strokeWidth, fill }]
+// images: [{ pageIndex, dataUrl, n:{x,y,w,h} }]
+export const applyPdfEdits = async (file, { texts = [], shapes = [], images = [] } = {}) => {
+  const docPdf = await PDFDocument.load(await readFile(file), { ignoreEncryption: true });
+  const pages = docPdf.getPages();
+  const cache = {};
+  const fontKey = ({ family, bold, italic }) => {
+    if (family === 'mono') return bold ? (italic ? 'CourierBoldOblique' : 'CourierBold') : (italic ? 'CourierOblique' : 'Courier');
+    if (family === 'serif') return bold ? (italic ? 'TimesRomanBoldItalic' : 'TimesRomanBold') : (italic ? 'TimesRomanItalic' : 'TimesRoman');
+    return bold ? (italic ? 'HelveticaBoldOblique' : 'HelveticaBold') : (italic ? 'HelveticaOblique' : 'Helvetica');
+  };
+  const pick = async (e) => {
+    const key = fontKey(e);
+    if (!cache[key]) cache[key] = await docPdf.embedFont(StandardFonts[key]);
+    return cache[key];
+  };
+  const px = (n, ptW, ptH) => ({ x: n.x * ptW, w: n.w * ptW, h: n.h * ptH, y: ptH - n.y * ptH - n.h * ptH });
+
+  for (const e of texts) {
+    const page = pages[e.pageIndex];
+    if (!page) continue;
+    const font = await pick(e);
+    const size = e.size || 12;
+    const text = e.text || '';
+    const safe = (t) => { try { return font.widthOfTextAtSize(t, size); } catch { return t.length * size * 0.5; } };
+    const tw = safe(text);
+    const boxW = e.widthPt || tw;
+    let drawX = e.xPt;
+    if (e.align === 'center') drawX = e.xPt + (boxW - tw) / 2;
+    else if (e.align === 'right') drawX = e.xPt + (boxW - tw);
+    const left = Math.min(e.xPt, drawX) - 1;
+    const right = Math.max(e.xPt + boxW, drawX + tw) + 1;
+    page.drawRectangle({ x: left, y: e.yPt - size * 0.30, width: right - left, height: size * 1.34, color: hexToRgb(e.bg) });
+    const col = hexToRgb(e.color);
+    try { page.drawText(text, { x: drawX, y: e.yPt, size, font, color: col }); }
+    catch { page.drawText(text.replace(/[^\x20-\x7E]/g, '?'), { x: drawX, y: e.yPt, size, font, color: col }); }
+    if (e.underline) page.drawRectangle({ x: drawX, y: e.yPt - size * 0.12, width: tw, height: Math.max(0.6, size * 0.06), color: col });
+  }
+
+  for (const sh of shapes) {
+    const page = pages[sh.pageIndex];
+    if (!page) continue;
+    const { width: ptW, height: ptH } = page.getSize();
+    const b = px(sh.n, ptW, ptH);
+    const color = hexToRgb(sh.color);
+    if (sh.type === 'highlight') {
+      page.drawRectangle({ x: b.x, y: b.y, width: b.w, height: b.h, color, opacity: sh.opacity ?? 0.35 });
+    } else if (sh.type === 'line') {
+      page.drawLine({ start: { x: b.x, y: b.y + b.h / 2 }, end: { x: b.x + b.w, y: b.y + b.h / 2 }, thickness: sh.strokeWidth || 2, color });
+    } else { // rect
+      page.drawRectangle({ x: b.x, y: b.y, width: b.w, height: b.h, borderColor: color, borderWidth: sh.strokeWidth || 2, ...(sh.fill ? { color, opacity: sh.opacity ?? 0.25 } : {}) });
+    }
+  }
+
+  for (const im of images) {
+    const page = pages[im.pageIndex];
+    if (!page) continue;
+    const { width: ptW, height: ptH } = page.getSize();
+    const b = px(im.n, ptW, ptH);
+    const embedded = /^data:image\/png/i.test(im.dataUrl) ? await docPdf.embedPng(im.dataUrl) : await docPdf.embedJpg(im.dataUrl);
+    page.drawImage(embedded, { x: b.x, y: b.y, width: b.w, height: b.h });
+  }
+
+  return docPdf.save();
+};
+
+// Place multiple PNG image stamps on their pages. stamps: [{ pageIndex, dataUrl, n:{x,y,w,h} }]
+export const placeStamps = async (file, stamps) => {
+  const doc = await PDFDocument.load(await readFile(file), { ignoreEncryption: true });
+  const pages = doc.getPages();
+  for (const s of stamps) {
+    const page = pages[s.pageIndex];
+    if (!page) continue;
+    const { width: ptW, height: ptH } = page.getSize();
+    const png = await doc.embedPng(s.dataUrl);
+    const x = s.n.x * ptW, w = s.n.w * ptW, h = s.n.h * ptH;
+    const y = ptH - s.n.y * ptH - h;
+    page.drawImage(png, { x, y, width: w, height: h });
+  }
+  return doc.save();
+};
+
+
 // Compress a PDF trying to land at or below targetBytes. Returns { bytes, size }.
 export const compressToTarget = async (file, targetBytes, { onProgress } = {}) => {
   const data = await readFile(file);
