@@ -5,6 +5,7 @@ import { ThemeProvider } from './context/ThemeContext';
 import Home from './pages/Home';
 import ToolPage from './pages/ToolPage';
 import SignPage from './pages/SignPage';
+import EditPdfPage from './pages/EditPdfPage';
 import ImageToolPage from './pages/ImageToolPage';
 
 if ('scrollRestoration' in window.history) window.history.scrollRestoration = 'manual';
@@ -24,6 +25,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/tool/sign-pdf" element={<SignPage />} />
+            <Route path="/tool/edit-pdf" element={<EditPdfPage />} />
             <Route path="/tool/compress-image" element={<ImageToolPage />} />
             <Route path="/tool/crop-image" element={<ImageToolPage />} />
             <Route path="/tool/remove-background" element={<ImageToolPage />} />

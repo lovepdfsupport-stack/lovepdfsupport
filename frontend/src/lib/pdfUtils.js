@@ -332,6 +332,152 @@ const buildRasterPdf = async (canvases, scaleFactor, quality) => {
   return out.save({ useObjectStreams: true });
 };
 
+// ---------------------------------------------------------------------------
+// EDIT PDF: extract clickable text items from a page + apply text edits.
+// ---------------------------------------------------------------------------
+
+const toHex = (r, g, b) =>
+  '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
+
+// Heuristically classify a font name into style buckets used for re-drawing.
+const classifyFont = (name = '') => {
+  const n = String(name).toLowerCase();
+  const bold = /(bold|black|heavy|semibold|[-_ ]?(700|800|900))/.test(n);
+  const italic = /(italic|oblique)/.test(n);
+  const mono = /(mono|courier|consol|menlo|typewriter)/.test(n);
+  const isSans = /sans/.test(n) || /(helvetica|arial|verdana|tahoma|calibri|segoe|roboto|open ?sans|lato)/.test(n);
+  const serif = !mono && !isSans && /(times|serif|georgia|roman|garamond|minion|cambria|book antiqua|palatino|ming|song|nimbus ?rom)/.test(n);
+  return { bold, italic, mono, serif };
+};
+
+// Render one page and return the rendered image + every text run on it with
+// preview-space geometry (for the overlay) and PDF-space geometry (for export).
+export const extractPageText = async (file, pageIndex = 0, previewWidth = 720) => {
+  const data = await readFile(file);
+  const doc = await pdfjsLib.getDocument({ data }).promise;
+  const page = await doc.getPage(pageIndex + 1);
+  const vp1 = page.getViewport({ scale: 1 });
+  const scale = previewWidth / vp1.width;
+  const vp = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(vp.width);
+  canvas.height = Math.ceil(vp.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+  const tc = await page.getTextContent();
+  const styles = tc.styles || {};
+  const pix = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  const cw = canvas.width;
+
+  // Find the text color (darkest) and background (lightest) inside a box.
+  const sampleColors = (bx, by, bw, bh) => {
+    const x0 = Math.max(0, Math.floor(bx));
+    const y0 = Math.max(0, Math.floor(by));
+    const x1 = Math.min(canvas.width, Math.ceil(bx + bw));
+    const y1 = Math.min(canvas.height, Math.ceil(by + bh));
+    let dMin = 1e9, lMax = -1;
+    let dark = [15, 23, 42];
+    let light = [255, 255, 255];
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y * cw + x) * 4;
+        const r = pix[i], g = pix[i + 1], b = pix[i + 2];
+        const s = r + g + b;
+        if (s < dMin) { dMin = s; dark = [r, g, b]; }
+        if (s > lMax) { lMax = s; light = [r, g, b]; }
+      }
+    }
+    return { color: toHex(dark[0], dark[1], dark[2]), bg: toHex(light[0], light[1], light[2]) };
+  };
+
+  const items = [];
+  tc.items.forEach((it, idx) => {
+    if (!it.str || !it.str.trim()) return;
+    const t = pdfjsLib.Util.transform(vp.transform, it.transform);
+    const fontPx = Math.hypot(t[2], t[3]);
+    if (fontPx < 3) return; // ignore tiny/invisible runs
+    const left = t[4];
+    const top = t[5] - fontPx;
+    const widthPx = (it.width || 0) * scale || fontPx * (it.str.length * 0.5);
+    const st = styles[it.fontName] || {};
+    const cls = classifyFont(st.fontFamily || it.fontName || '');
+    const { color, bg } = sampleColors(left, top, Math.max(widthPx, fontPx * 0.6), fontPx * 1.25);
+    items.push({
+      id: `${pageIndex}-${idx}`,
+      str: it.str,
+      // preview-space (CSS px over the rendered image)
+      left, top, widthPx, fontPx,
+      // pdf-space (points, origin bottom-left) for export
+      xPt: it.transform[4],
+      yPt: it.transform[5],
+      sizePt: Math.hypot(it.transform[0], it.transform[1]) || (fontPx / scale),
+      widthPt: it.width || 0,
+      color, bg,
+      bold: cls.bold, italic: cls.italic, serif: cls.serif, mono: cls.mono,
+    });
+  });
+
+  return {
+    dataUrl: canvas.toDataURL('image/jpeg', 0.9),
+    pxW: canvas.width,
+    pxH: canvas.height,
+    ptW: vp1.width,
+    ptH: vp1.height,
+    total: doc.numPages,
+    items,
+  };
+};
+
+const hexToRgb = (hex) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return rgb(0.06, 0.09, 0.16);
+  const int = parseInt(m[1], 16);
+  return rgb(((int >> 16) & 255) / 255, ((int >> 8) & 255) / 255, (int & 255) / 255);
+};
+
+// Apply a list of text edits to the original PDF and return saved bytes.
+// edits: [{ pageIndex, xPt, yPt, sizePt, widthPt, text, color, bg, bold, italic, serif, mono }]
+export const applyPdfTextEdits = async (file, edits) => {
+  const docPdf = await PDFDocument.load(await readFile(file), { ignoreEncryption: true });
+  const pages = docPdf.getPages();
+  const cache = {};
+  const pick = async ({ bold, italic, serif, mono }) => {
+    let key;
+    if (mono) key = bold ? (italic ? 'CourierBoldOblique' : 'CourierBold') : (italic ? 'CourierOblique' : 'Courier');
+    else if (serif) key = bold ? (italic ? 'TimesRomanBoldItalic' : 'TimesRomanBold') : (italic ? 'TimesRomanItalic' : 'TimesRoman');
+    else key = bold ? (italic ? 'HelveticaBoldOblique' : 'HelveticaBold') : (italic ? 'HelveticaOblique' : 'Helvetica');
+    if (!cache[key]) cache[key] = await docPdf.embedFont(StandardFonts[key]);
+    return cache[key];
+  };
+
+  for (const e of edits) {
+    const page = pages[e.pageIndex];
+    if (!page) continue;
+    const font = await pick(e);
+    const size = e.sizePt || 12;
+    const coverW = Math.max(e.widthPt || 0, font.widthOfTextAtSize(e.text || '', size)) + 2;
+    // cover the original glyphs with the sampled background colour
+    page.drawRectangle({
+      x: e.xPt - 1,
+      y: e.yPt - size * 0.28,
+      width: coverW,
+      height: size * 1.32,
+      color: hexToRgb(e.bg),
+    });
+    const drawWith = (txt) => page.drawText(txt, { x: e.xPt, y: e.yPt, size, font, color: hexToRgb(e.color) });
+    try {
+      drawWith(e.text || '');
+    } catch (err) {
+      // Standard fonts only encode WinAnsi; fall back to ASCII-safe text.
+      drawWith((e.text || '').replace(/[^\x20-\x7E]/g, '?'));
+    }
+  }
+  return docPdf.save();
+};
+
 // Compress a PDF trying to land at or below targetBytes. Returns { bytes, size }.
 export const compressToTarget = async (file, targetBytes, { onProgress } = {}) => {
   const data = await readFile(file);

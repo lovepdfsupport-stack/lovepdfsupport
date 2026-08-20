@@ -51,8 +51,9 @@ ilovepdf-style PDF tools website (repo: sanjusaharan10704-svg/LOVEPDF). Bug fix 
 - Some tools marked "soon" badge if not ready && no server config; all 26 slugs routable
 
 ## Backlog (priority order)
-- P0: Sign PDF feature (draw/upload signature, drag-drop place/resize on page, backend stamp, download) — SignPage.jsx exists, verify/complete
+- DONE (July 2025): Edit PDF (/tool/edit-pdf) — click any text to edit inline, matched standard font (size/color/position/bold/italic/serif), pdf-lib cover+redraw export. Client-side (pdfjs extractPageText + applyPdfTextEdits in lib/pdfUtils.js). NOTE: original text is visually covered but still remains in the file's text layer (copy/search reveals old text) — true content-stream removal is a future enhancement.
+- DONE (July 2025): Reinstalled system tools (LibreOffice, Ghostscript, Tesseract, Poppler) — /api/pdf/health now true for soffice/gs/tesseract/pdftoppm. Recreated missing backend/.env + frontend/.env.
 - P0: Batch processing (multi-file upload → same tool on all → zip download)
-- P1: Edit PDF Text tool (user deferred — font detection tricky for embedded fonts; basic replace, PDF export)
+- P1: Edit PDF v2 — add-new-text-box + delete/whiteout regions; true text removal
 - P2: Deployment guide — Railway/Render Docker image, MongoDB Atlas, lovepdf.co.in DNS (A/CNAME + api subdomain), SSL
 - P2: Replace mock stats/reviews or label as "sample"

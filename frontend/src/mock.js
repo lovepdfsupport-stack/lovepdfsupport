@@ -21,6 +21,7 @@ export const TOOLS = [
   { slug: 'rotate-pdf', name: 'Rotate PDF', desc: 'Rotate one or all pages exactly the way you need them.', icon: 'RotateCw', color: 'sky', category: 'organize', engine: 'rotate', ready: true },
   { slug: 'jpg-to-pdf', name: 'JPG to PDF', desc: 'Convert JPG, PNG and other images into a single PDF file.', icon: 'Image', color: 'orange', category: 'convert-to', engine: 'jpg-to-pdf', ready: true },
   { slug: 'pdf-to-jpg', name: 'PDF to JPG', desc: 'Turn each PDF page into a high quality JPG image.', icon: 'FileImage', color: 'fuchsia', category: 'convert-from', engine: 'pdf-to-jpg', ready: true },
+  { slug: 'edit-pdf', name: 'Edit PDF', desc: 'Click any text in your PDF to edit it inline, then download the updated file.', icon: 'PenLine', color: 'rose', category: 'edit', engine: 'edit', ready: true },
   { slug: 'page-numbers', name: 'Page Numbers', desc: 'Insert page numbers into your PDF with custom positions.', icon: 'Hash', color: 'teal', category: 'edit', engine: 'page-numbers', ready: true },
   { slug: 'watermark-pdf', name: 'Watermark', desc: 'Stamp an image or text watermark over your PDF pages.', icon: 'Stamp', color: 'indigo', category: 'edit', engine: 'watermark', ready: true },
   { slug: 'extract-pages', name: 'Extract Pages', desc: 'Pull selected pages out of a PDF into a brand new file.', icon: 'FileOutput', color: 'rose', category: 'organize', engine: 'extract', ready: true },
