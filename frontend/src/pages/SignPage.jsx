@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as Icons from 'lucide-react';
-import { ChevronRight, ChevronLeft, ChevronRight as ChevRight, PenTool, Type, Eraser, Download, Loader2, CheckCircle2, X, Trash2, Move } from 'lucide-react';
+import { ChevronRight, ChevronLeft, ChevronRight as ChevRight, PenTool, Type, Eraser, Download, Loader2, CheckCircle2, X, Trash2, Move, Image as ImageIcon, UploadCloud, Wand2 } from 'lucide-react';
 import Header from '../components/Header';
 import Footer from '../components/Footer';
 import FileDrop from '../components/FileDrop';
 import * as pdf from '../lib/pdfUtils';
+
+const IMG_API = `${process.env.REACT_APP_BACKEND_URL}/api/image`;
 
 const SIG_FONTS = [
   { id: "'Brush Script MT', cursive", label: 'Signature' },
@@ -76,6 +78,8 @@ const SignPage = () => {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [imgLoading, setImgLoading] = useState(false);
+  const imgInputRef = useRef(null);
   const stageRef = useRef(null);
   const drag = useRef(null);
 
@@ -119,6 +123,39 @@ const SignPage = () => {
     setSig({ dataUrl: c.toDataURL('image/png'), ratio: c.height / c.width });
   };
 
+  // Upload an image, auto-remove its background, and use it as the stamp.
+  const onImagePick = async (fileList) => {
+    const f = fileList && fileList[0];
+    if (!f) return;
+    if (!/^image\/(png|jpe?g|webp)$/i.test(f.type)) {
+      setError('Please choose a JPG, PNG or WebP image.');
+      return;
+    }
+    setImgLoading(true); setError(''); setSig(null); setBox(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      const res = await fetch(`${IMG_API}/remove-bg`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const j = await res.json().catch(() => null);
+        throw new Error(j?.detail || 'Could not remove the background from this image.');
+      }
+      const blob = await res.blob();
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+      });
+      const img = new Image();
+      img.onload = () => setSig({ dataUrl, ratio: img.height / img.width });
+      img.src = dataUrl;
+    } catch (e) {
+      setError(e.message || 'Background removal failed. Please try again.');
+    }
+    setImgLoading(false);
+  };
+
   const addToPage = null; // placement handled automatically when a signature is created
 
   // place default box when a signature becomes available
@@ -128,7 +165,7 @@ const SignPage = () => {
       const h = w * (sig.ratio || 0.4);
       setBox({ x: (preview.pxW - w) / 2, y: preview.pxH - h - 40, w, h });
     }
-  }, [sig, preview]); // eslint-disable-line
+  }, [sig, preview]);
 
   const onSigDraw = (dataUrl) => {
     if (!dataUrl) { setSig(null); setBox(null); return; }
@@ -197,7 +234,7 @@ const SignPage = () => {
           </div>
           <div className="grid place-items-center w-16 h-16 mx-auto rounded-2xl bg-violet-500/12 text-violet-500 dark:text-violet-400"><PenTool className="w-8 h-8" /></div>
           <h1 className="font-display font-extrabold text-3xl sm:text-4xl mt-5">Sign PDF</h1>
-          <p className="text-slate-500 dark:text-slate-400 mt-3 max-w-xl mx-auto">Draw or type your signature, then drag it exactly where you want on the page.</p>
+          <p className="text-slate-500 dark:text-slate-400 mt-3 max-w-xl mx-auto">Draw, type or upload an image (background removed automatically), then drag it exactly where you want on the page.</p>
         </div>
       </section>
 
@@ -247,7 +284,7 @@ const SignPage = () => {
             <div className="rounded-2xl border border-slate-200 dark:border-white/10 bg-white dark:bg-white/[0.03] p-5 h-fit">
               <h3 className="font-display font-semibold mb-4">Your signature</h3>
               <div className="flex gap-2 mb-4 p-1 rounded-xl bg-slate-100 dark:bg-white/5">
-                {[{ id: 'draw', label: 'Draw', icon: PenTool }, { id: 'type', label: 'Type', icon: Type }].map((t) => (
+                {[{ id: 'draw', label: 'Draw', icon: PenTool }, { id: 'type', label: 'Type', icon: Type }, { id: 'image', label: 'Image', icon: ImageIcon }].map((t) => (
                   <button key={t.id} onClick={() => { setTab(t.id); setSig(null); setBox(null); }}
                     className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-semibold transition-colors ${tab === t.id ? 'bg-white dark:bg-white/10 shadow-sm text-rose-500' : 'text-slate-500'}`}>
                     <t.icon className="w-4 h-4" /> {t.label}
@@ -255,9 +292,9 @@ const SignPage = () => {
                 ))}
               </div>
 
-              {tab === 'draw' ? (
-                <SignPad onChange={onSigDraw} />
-              ) : (
+              {tab === 'draw' && <SignPad onChange={onSigDraw} />}
+
+              {tab === 'type' && (
                 <div className="space-y-3">
                   <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Type your name" className="input" />
                   <div className="flex gap-2">
@@ -267,6 +304,35 @@ const SignPage = () => {
                   </div>
                   {typed && <div className="rounded-xl border border-slate-200 dark:border-white/10 bg-white p-3 text-center text-3xl text-slate-900" style={{ fontFamily: font }}>{typed}</div>}
                   <button onClick={makeTyped} disabled={!typed.trim()} className="w-full btn-primary text-white text-sm font-semibold py-2.5 rounded-xl disabled:opacity-50">Use this signature</button>
+                </div>
+              )}
+
+              {tab === 'image' && (
+                <div className="space-y-3">
+                  <input ref={imgInputRef} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => onImagePick(e.target.files)} />
+                  {!sig && !imgLoading && (
+                    <button onClick={() => imgInputRef.current?.click()}
+                      className="w-full flex flex-col items-center justify-center gap-2 py-8 rounded-xl border-2 border-dashed border-slate-200 dark:border-white/10 hover:border-rose-400 hover:bg-rose-50/50 dark:hover:bg-rose-500/[0.05] transition-colors text-slate-500">
+                      <UploadCloud className="w-7 h-7 text-rose-500" />
+                      <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Upload an image</span>
+                      <span className="text-xs">JPG, PNG or WebP · background removed automatically</span>
+                    </button>
+                  )}
+                  {imgLoading && (
+                    <div className="flex flex-col items-center justify-center gap-2 py-10 text-slate-500">
+                      <Loader2 className="w-6 h-6 animate-spin text-rose-500" />
+                      <span className="text-sm font-medium flex items-center gap-1.5"><Wand2 className="w-4 h-4" /> Removing background…</span>
+                      <span className="text-xs">First run may take a few seconds.</span>
+                    </div>
+                  )}
+                  {sig && !imgLoading && (
+                    <div className="space-y-2">
+                      <div className="rounded-xl border border-slate-200 dark:border-white/10 p-3 grid place-items-center" style={{ backgroundImage: 'linear-gradient(45deg,#e2e8f0 25%,transparent 25%),linear-gradient(-45deg,#e2e8f0 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e2e8f0 75%),linear-gradient(-45deg,transparent 75%,#e2e8f0 75%)', backgroundSize: '16px 16px', backgroundPosition: '0 0,0 8px,8px -8px,-8px 0' }}>
+                        <img src={sig.dataUrl} alt="cutout" className="max-h-40 object-contain" />
+                      </div>
+                      <button onClick={() => imgInputRef.current?.click()} className="w-full text-sm font-semibold text-rose-500 hover:text-rose-600 py-1.5">Choose a different image</button>
+                    </div>
+                  )}
                 </div>
               )}
 

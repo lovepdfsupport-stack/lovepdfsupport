@@ -1,12 +1,15 @@
-"""Image tools: compression and background removal."""
+"""Image tools: compression and background removal (local, via rembg)."""
 import io
 import os
+import logging
 
 import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter(prefix="/api/image", tags=["image-tools"])
+logger = logging.getLogger(__name__)
 
 ALLOWED = {"image/jpeg", "image/png", "image/webp"}
 MAX_BYTES = 20 * 1024 * 1024
@@ -26,6 +29,24 @@ async def _read_image(file: UploadFile) -> bytes:
     except Exception:
         raise HTTPException(415, "Invalid or corrupt image.")
     return data
+
+
+# --- Local background removal via rembg (no API key, offline) -------------
+_REMBG_SESSION = None
+
+
+def _get_rembg_session():
+    global _REMBG_SESSION
+    if _REMBG_SESSION is None:
+        from rembg import new_session
+        _REMBG_SESSION = new_session("u2net")
+    return _REMBG_SESSION
+
+
+def _remove_bg_local(data: bytes) -> bytes:
+    """Blocking rembg call — run inside a threadpool. Returns transparent PNG bytes."""
+    from rembg import remove
+    return remove(data, session=_get_rembg_session())
 
 
 @router.post("/compress")
@@ -68,34 +89,13 @@ async def compress_image(file: UploadFile = File(...), quality: int = Form(75), 
 async def remove_background(file: UploadFile = File(...)):
     if file.content_type not in ALLOWED:
         raise HTTPException(415, "Upload a JPEG, PNG or WebP image.")
-    api_key = os.environ.get("REMOVEBG_API_KEY")
-    if not api_key:
-        raise HTTPException(500, "Background removal is not configured.")
     data = await _read_image(file)
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
-            upstream = await client.post(
-                REMOVE_BG_URL,
-                headers={"X-Api-Key": api_key},
-                files={"image_file": (file.filename or "upload", data, file.content_type)},
-                data={"size": "auto", "format": "png"},
-            )
-    except httpx.TimeoutException:
-        raise HTTPException(504, "Background removal timed out. Try a smaller image.")
-    except httpx.RequestError:
-        raise HTTPException(502, "Could not reach the background removal service.")
-    if upstream.status_code == 429:
-        raise HTTPException(429, "Monthly background-removal quota reached. Try again later.")
-    if upstream.status_code in (401, 403):
-        raise HTTPException(502, "Background removal API key was rejected.")
-    if upstream.status_code != 200:
-        detail = "Could not process this image."
-        try:
-            detail = upstream.json()["errors"][0]["title"]
-        except Exception:
-            pass
-        raise HTTPException(502, f"Background removal failed: {detail}")
+        out = await run_in_threadpool(_remove_bg_local, data)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("rembg background removal failed")
+        raise HTTPException(500, "Could not remove the background from this image.")
     stem = (file.filename or "image").rsplit(".", 1)[0]
-    return Response(content=upstream.content, media_type="image/png", headers={
+    return Response(content=out, media_type="image/png", headers={
         "Content-Disposition": f'attachment; filename="{stem}_no_bg.png"',
     })

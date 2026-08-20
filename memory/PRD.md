@@ -51,6 +51,7 @@ ilovepdf-style PDF tools website (repo: sanjusaharan10704-svg/LOVEPDF). Bug fix 
 - Some tools marked "soon" badge if not ready && no server config; all 26 slugs routable
 
 ## Backlog (priority order)
+- DONE (July 2025): Sign PDF "Image" tab — upload image → background auto-removed → transparent cutout placed/resized on page (SignPage.jsx). Background removal switched from remove.bg (API key) to LOCAL rembg (keyless, offline; u2net model auto-downloads to /root/.rembg on first call). /api/image/remove-bg now uses rembg for both Sign PDF and the Remove Background image tool. Backend deps: rembg==2.0.81, onnxruntime==1.29.0.
 - DONE (July 2025): Edit PDF (/tool/edit-pdf) — click any text to edit inline, matched standard font (size/color/position/bold/italic/serif), pdf-lib cover+redraw export. Client-side (pdfjs extractPageText + applyPdfTextEdits in lib/pdfUtils.js). NOTE: original text is visually covered but still remains in the file's text layer (copy/search reveals old text) — true content-stream removal is a future enhancement.
 - DONE (July 2025): Reinstalled system tools (LibreOffice, Ghostscript, Tesseract, Poppler) — /api/pdf/health now true for soffice/gs/tesseract/pdftoppm. Recreated missing backend/.env + frontend/.env.
 - P0: Batch processing (multi-file upload → same tool on all → zip download)
